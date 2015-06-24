@@ -1,12 +1,10 @@
 var app = require('app');
 var BrowserWindow = require('browser-window');
+var menu = require('./menu');
 
-app.commandLine.appendSwitch('js-flags', '--harmony');
+process.env.PATH += ':/usr/local/bin';
 
-process.stdin.setEncoding('utf8');
-process.stdout.setEncoding('utf8');
-
-var mainWindow = null;
+var mainWindow;
 
 app.on('ready', function () {
 
@@ -18,5 +16,7 @@ app.on('ready', function () {
         resizable: true
     });
 
-    mainWindow.loadUrl('file://' + __dirname + '/../index.html');
+    mainWindow.loadUrl('file://' + __dirname + '/../../index.html');
+    mainWindow.focus();
+    menu.setMenu(app, mainWindow);
 });

@@ -1,53 +1,58 @@
-/// <reference path="references.ts" />
+import events = require('events');
+import Autocompletion = require('./Autocompletion');
+import Buffer = require('./Buffer');
+import Aliases = require('./Aliases');
+import History = require('./History');
+import _ = require('lodash');
+import i = require('./Interfaces');
+import ParsableString = require('./ParsableString');
 
-module BlackScreen {
+class Prompt extends events.EventEmitter {
+    buffer: Buffer;
+    // TODO: change the type.
+    history: any;
+    private autocompletion = new Autocompletion();
+    private commandParts: string[];
 
-    export class Prompt extends EventEmitter {
-        private buffer: Buffer;
-        history: any;
+    constructor(private directory: string) {
+        super();
 
-        constructor(private directory: string) {
-            super();
+        this.buffer = new Buffer();
+        this.buffer.on('data', () => { this.commandParts = this.toParsableString().expandToArray(); });
+        this.history = History;
+    }
 
-            this.buffer = new Buffer();
-            this.buffer.on('data', () => { this.emit('data'); });
+    execute(): void {
+        this.history.append(this.buffer.toString());
+        this.emit('send');
+    }
 
-            this.history = History;
-        }
+    getCommandName(): string {
+        return this.getWholeCommand()[0];
+    }
 
-        send(value: string): void {
-            for(var i = 0; i != value.length; i++) {
-                this.buffer.write(value.charAt(i));
-            }
+    getArguments(): string[] {
+        return this.getWholeCommand().slice(1);
+    }
 
-            this.history.append(value);
-            this.emit('send');
-        }
+    getWholeCommand(): string[] {
+        return this.commandParts;
+    }
 
-        getCommand(): string {
-            return this.expandCommand(this.buffer.toString())[0];
+    getSuggestions(): Promise<i.Suggestion[]> {
+        return this.autocompletion.getSuggestions(this.directory, this.toParsableString())
+    }
 
-        }
+    replaceCurrentLexeme(suggestion: i.Suggestion): void {
+        var lexemes = this.toParsableString().getLexemes();
+        lexemes[lexemes.length - 1] = suggestion.value;
 
-        getArguments(): Array<string> {
-            return this.expandCommand(this.buffer.toString()).slice(1);
-        }
+        this.buffer.setTo(lexemes.join(' '));
+    }
 
-        private expandCommand(command: string): Array<string> {
-            // Split by comma, but not inside quotes.
-            // http://stackoverflow.com/questions/16261635/javascript-split-string-by-space-but-ignore-space-in-quotes-notice-not-to-spli
-            var parts = command.match(/(?:[^\s']+|'[^']*')+/g);
-            var commandName = parts.shift();
-
-            var alias: string = Aliases.find(commandName);
-
-            if (alias) {
-                parts = this.expandCommand(alias).concat(parts);
-            } else {
-                parts.unshift(commandName);
-            }
-
-            return parts;
-        }
+    private toParsableString(): ParsableString {
+        return new ParsableString(this.buffer.toString());
     }
 }
+
+export = Prompt;

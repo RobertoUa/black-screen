@@ -1,72 +1,145 @@
 /// <reference path="references.ts" />
 
-var pty = require('pty.js');
-var _: _.LoDashStatic = require('lodash');
+var child_pty = require('child_pty');
+import child_process = require('child_process');
+import _ = require('lodash');
+import React = require('react');
+import events = require('events');
+import Parser = require('./Parser');
+import Prompt = require('./Prompt');
+import Buffer = require('./Buffer');
+import Command = require('./Command');
+import History = require('./History');
+import i = require('./Interfaces');
+import e = require('./Enums');
+//TODO: Make them attributes;
+import DecoratorsList = require('./decorators/List');
+import DecoratorsBase = require('./decorators/Base');
 
-module BlackScreen {
-    export class Invocation extends EventEmitter {
-        private command: NodeJS.Process;
-        private parser: Parser;
-        private prompt: Prompt;
-        private buffer: Buffer;
+class Invocation extends events.EventEmitter {
+    private command: child_process.ChildProcess;
+    private parser: Parser;
+    private prompt: Prompt;
+    private buffer: Buffer;
+    public id: string;
+    public status: e.Status = e.Status.NotStarted;
 
-        constructor(private directory: string,
-                    private dimensions: Dimensions,
-                    private history: History) {
-            super();
+    constructor(private directory: string,
+                private dimensions: i.Dimensions,
+                private history: History) {
+        super();
 
-            this.prompt = new Prompt(directory);
-            this.prompt.on('send', () => { this.execute(); });
+        this.prompt = new Prompt(directory);
+        this.prompt.on('send', () => {
+            this.execute();
+        });
 
-            this.buffer = new Buffer();
-            this.buffer.on('data', _.throttle(() => { this.emit('data'); }, 1000/10));
+        this.buffer = new Buffer();
+        this.buffer.on('data', _.throttle(() => { this.emit('data'); }, 1000/60));
+        this.parser = new Parser(this);
+        this.id = `invocation-${new Date().getTime()}`
+    }
 
-            this.parser = new Parser(this.buffer);
-        }
+    execute(): void {
+        var command = this.prompt.getCommandName();
 
-        execute(): void {
-            var command = this.prompt.getCommand();
-            if (this.isBuiltIn(command)) {
-                this.emit('working-directory-changed', Command.cd(this.directory, this.prompt.getArguments()));
+        if (Command.isBuiltIn(command)) {
+            try {
+                var newDirectory = Command.cd(this.directory, this.prompt.getArguments());
+                this.emit('working-directory-changed', newDirectory);
+            } catch (error) {
+                this.setStatus(e.Status.Failure);
+                this.buffer.writeString(error.message, {color: e.Color.Red});
+            }
+
+            this.emit('end');
+        } else {
+            this.command = child_pty.spawn(command, this.prompt.getArguments(), {
+                columns: this.dimensions.columns,
+                rows: this.dimensions.rows,
+                cwd: this.directory,
+                env: process.env
+            });
+
+            this.setStatus(e.Status.InProgress);
+
+            this.command.stdout.on('data', (data: string) => {
+                this.parser.parse(data.toString());
+            });
+            this.command.on('close', (code: number, signal: string) => {
+                if (code === 0) {
+                    this.setStatus(e.Status.Success);
+                } else {
+                    this.setStatus(e.Status.Failure);
+                }
                 this.emit('end');
+            })
+        }
+    }
+
+    write(input: string|React.KeyboardEvent) {
+        if (typeof input == 'string') {
+            var text = <string>input
+        } else {
+            var event = <React.KeyboardEvent>input;
+            var identifier: string = (<any>event.nativeEvent).keyIdentifier;
+
+            if (identifier.startsWith('U+')) {
+                var code =parseInt(identifier.substring(2), 16);
+                text = String.fromCharCode(code);
+                if (!event.shiftKey && code >= 65 && code <= 90) {
+                    text = text.toLowerCase()
+                }
             } else {
-                this.command = pty.spawn(command, this.prompt.getArguments(), {
-                    cols: this.dimensions.columns,
-                    rows: this.dimensions.rows,
-                    cwd: this.directory,
-                    env: process.env
-                });
-
-                this.command.on('data', (data: string) => {
-                    this.parser.parse(data);
-                }).on('end', () => {
-                    this.emit('end');
-                })
+                text = String.fromCharCode(event.keyCode);
             }
         }
 
-        resize(dimensions: Dimensions) {
-            this.dimensions = dimensions;
+        this.command.stdin.write(text);
+    }
 
-            if (this.command) {
-                this.command.kill(this.command.pid, 'SIGWINCH');
-            }
+    hasOutput(): boolean {
+        return !this.buffer.isEmpty();
+    }
+
+    resize(dimensions: i.Dimensions) {
+        this.dimensions = dimensions;
+
+        if (this.command) {
+            (<any>this.command.stdout).resize(dimensions);
         }
+    }
 
-        getBuffer(): Buffer {
-            return this.buffer;
-        }
-
-        getPrompt(): Prompt {
-            return this.prompt;
-        }
-
-        private isBuiltIn(command: String): any {
-            if (command == 'cd') {
+    canBeDecorated(): boolean {
+        for (var Decorator of DecoratorsList) {
+            if ((new Decorator(this)).isApplicable()) {
                 return true;
-            } else {
-                return false;
+            }
+        }
+        return false;
+    }
+
+    decorate(): any {
+        for (var Decorator of DecoratorsList) {
+            var decorator: DecoratorsBase = new Decorator(this);
+            if (decorator.isApplicable()) {
+                return decorator.decorate();
             }
         }
     }
+
+    getBuffer(): Buffer {
+        return this.buffer;
+    }
+
+    getPrompt(): Prompt {
+        return this.prompt;
+    }
+
+    setStatus(status: e.Status): void {
+        this.status = status;
+        this.emit('status', status);
+    }
 }
+
+export = Invocation;
